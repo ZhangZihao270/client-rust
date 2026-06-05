@@ -1,9 +1,10 @@
 // Copyright 2019 TiKV Project Authors. Licensed under Apache-2.0.
 use core::ops::Range;
 
+use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use log::debug;
 use tokio::time::sleep;
@@ -49,8 +50,9 @@ pub struct Client<PdC: PdClient = PdRpcClient> {
     /// Whether to use the [`atomic mode`](Client::with_atomic_for_cas).
     atomic: bool,
     keyspace: Keyspace,
-    /// Tracks the max assigned_index from weak puts for automatic causal ordering.
-    weak_min_index: Arc<AtomicU64>,
+    /// Per-region max assigned_index from weak puts for automatic causal ordering.
+    /// Maps region_id → max(assigned_index) seen from put_weak to that region.
+    weak_min_index: Arc<Mutex<HashMap<u64, u64>>>,
 }
 
 impl Clone for Client {
@@ -130,7 +132,7 @@ impl Client<PdRpcClient> {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace,
-            weak_min_index: Arc::new(AtomicU64::new(0)),
+            weak_min_index: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -679,7 +681,7 @@ impl<PdC: PdClient> Client<PdC> {
 
     /// Weak-consistency put: returns as soon as the write is proposed to Raft
     /// (before it is committed/applied). Returns the assigned raft log index.
-    /// The client automatically tracks the max assigned_index for causal reads.
+    /// The client automatically tracks per-region max assigned_index for causal reads.
     pub async fn put_weak(
         &self,
         key: impl Into<Key>,
@@ -693,17 +695,22 @@ impl<PdC: PdClient> Client<PdC> {
             .merge(CollectSingle)
             .post_process_default()
             .plan();
-        let assigned_index = plan.execute().await?;
-        // Track the max assigned_index for automatic causal ordering in get_weak.
-        self.weak_min_index
-            .fetch_max(assigned_index, Ordering::Relaxed);
+        let (assigned_index, region_id) = plan.execute().await?;
+        // Track per-region max assigned_index for automatic causal ordering in get_weak.
+        if region_id != 0 {
+            let mut map = self.weak_min_index.lock().unwrap();
+            let entry = map.entry(region_id).or_insert(0);
+            if assigned_index > *entry {
+                *entry = assigned_index;
+            }
+        }
         Ok(assigned_index)
     }
 
     /// Weak-consistency get: reads from local RocksDB without a ReadIndex
-    /// round-trip. Pass `min_index` from a prior `put_weak` to ensure causal
-    /// consistency (server waits until applied_index >= min_index). Use 0 for
-    /// no gating (plain stale read).
+    /// round-trip. Automatically uses the per-region tracked min_index for
+    /// causal consistency (server waits until applied_index >= min_index).
+    /// Pass explicit `min_index` to override, or 0 for no gating.
     pub async fn get_weak(
         &self,
         key: impl Into<Key>,
@@ -711,7 +718,15 @@ impl<PdC: PdClient> Client<PdC> {
     ) -> Result<Option<Value>> {
         debug!("invoking raw get_weak request");
         let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
-        let request = new_raw_get_weak_request(key, self.cf.clone(), min_index);
+        let effective_min_index = if min_index == 0 {
+            // Auto-resolve: look up the key's region and use tracked min_index.
+            let region = self.rpc.region_for_key(&key.clone().into()).await?;
+            let map = self.weak_min_index.lock().unwrap();
+            *map.get(&region.id()).unwrap_or(&0)
+        } else {
+            min_index
+        };
+        let request = new_raw_get_weak_request(key, self.cf.clone(), effective_min_index);
         let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
             .retry_multi_region(self.backoff.clone())
             .merge(CollectSingle)
@@ -720,9 +735,9 @@ impl<PdC: PdClient> Client<PdC> {
         plan.execute().await
     }
 
-    /// Returns the current tracked min_index for weak reads.
-    pub fn weak_min_index(&self) -> u64 {
-        self.weak_min_index.load(Ordering::Relaxed)
+    /// Returns the per-region MinIndex map for weak reads.
+    pub fn weak_min_index_map(&self) -> HashMap<u64, u64> {
+        self.weak_min_index.lock().unwrap().clone()
     }
 
     /// Create a new *atomic* 'compare and set' request.
@@ -996,7 +1011,7 @@ mod tests {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace: Keyspace::Enable { keyspace_id: 0 },
-            weak_min_index: Arc::new(AtomicU64::new(0)),
+            weak_min_index: Arc::new(Mutex::new(HashMap::new())),
         };
         let pairs = vec![
             KvPair(vec![11].into(), vec![12]),
@@ -1030,7 +1045,7 @@ mod tests {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace: Keyspace::Enable { keyspace_id: 0 },
-            weak_min_index: Arc::new(AtomicU64::new(0)),
+            weak_min_index: Arc::new(Mutex::new(HashMap::new())),
         };
         let resps = client
             .coprocessor(

@@ -2120,6 +2120,10 @@ pub struct RawPutWeakResponse {
     /// their causal dependency (min_index) for subsequent weak reads.
     #[prost(uint64, tag = "3")]
     pub assigned_index: u64,
+    /// The region that served this write. Used by the client to build a
+    /// per-region MinIndex map for correct multi-region causal tracking.
+    #[prost(uint64, tag = "4")]
+    pub region_id: u64,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]

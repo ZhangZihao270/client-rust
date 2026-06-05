@@ -678,11 +678,11 @@ impl SingleKey for kvrpcpb::RawPutWeakRequest {
 }
 
 impl Process<kvrpcpb::RawPutWeakResponse> for DefaultProcessor {
-    type Out = u64;
+    type Out = (u64, u64);
 
     fn process(&self, input: Result<kvrpcpb::RawPutWeakResponse>) -> Result<Self::Out> {
         let input = input?;
-        Ok(input.assigned_index)
+        Ok((input.assigned_index, input.region_id))
     }
 }
 
