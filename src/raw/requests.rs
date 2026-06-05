@@ -702,7 +702,50 @@ impl KvRequest for kvrpcpb::RawGetWeakRequest {
     type Response = kvrpcpb::RawGetWeakResponse;
 }
 
-shardable_key!(kvrpcpb::RawGetWeakRequest);
+// Custom Shardable impl for RawGetWeakRequest: routes to a follower replica
+// instead of the leader, and sets replica_read + stale_read flags.
+impl Shardable for kvrpcpb::RawGetWeakRequest {
+    type Shard = Vec<Vec<u8>>;
+
+    fn shards(
+        &self,
+        pd_client: &Arc<impl crate::pd::PdClient>,
+    ) -> BoxStream<'static, Result<(Self::Shard, RegionWithLeader)>> {
+        crate::store::region_stream_for_keys(
+            std::iter::once(self.key.clone()),
+            pd_client.clone(),
+        )
+    }
+
+    fn apply_shard(&mut self, mut shard: Self::Shard) {
+        assert!(shard.len() == 1);
+        self.key = shard.pop().unwrap();
+    }
+
+    fn apply_store(&mut self, store: &RegionStore) -> Result<()> {
+        let region = &store.region_with_leader;
+        let leader_id = region.leader.as_ref().map(|p| p.id);
+        // Pick a non-leader peer for the request context so TiKV serves
+        // it locally on a follower. Fall back to leader if no followers.
+        let peer = region
+            .region
+            .peers
+            .iter()
+            .find(|p| Some(p.id) != leader_id)
+            .cloned()
+            .or_else(|| region.leader.clone())
+            .ok_or_else(|| crate::Error::LeaderNotFound {
+                region: region.ver_id(),
+            })?;
+        let ctx = self.context.get_or_insert(kvrpcpb::Context::default());
+        ctx.region_id = region.region.id;
+        ctx.region_epoch = region.region.region_epoch.clone();
+        ctx.peer = Some(peer);
+        ctx.replica_read = true;
+        ctx.stale_read = true;
+        Ok(())
+    }
+}
 collect_single!(kvrpcpb::RawGetWeakResponse);
 
 impl SingleKey for kvrpcpb::RawGetWeakRequest {

@@ -80,6 +80,16 @@ pub trait PdClient: Send + Sync + 'static {
         self.map_region_to_store(region).await
     }
 
+    /// Like `map_region_to_store`, but connects to a non-leader peer's store
+    /// when possible. Used for weak reads that should land on the nearest
+    /// replica. Default: falls back to leader-based routing.
+    async fn map_region_to_store_follower(
+        self: Arc<Self>,
+        region: RegionWithLeader,
+    ) -> Result<RegionStore> {
+        self.map_region_to_store(region).await
+    }
+
     async fn all_stores(&self) -> Result<Vec<Store>>;
 
     fn group_keys_by_region<K, K2>(
@@ -225,6 +235,28 @@ impl<KvC: KvConnect + Send + Sync + 'static> PdClient for PdRpcClient<KvC> {
 
     async fn map_region_to_store(self: Arc<Self>, region: RegionWithLeader) -> Result<RegionStore> {
         let store_id = region.get_store_id()?;
+        let store = self.region_cache.get_store_by_id(store_id).await?;
+        let kv_client = self.kv_client(&store.address).await?;
+        Ok(RegionStore::new(region, Arc::new(kv_client)))
+    }
+
+    async fn map_region_to_store_follower(
+        self: Arc<Self>,
+        region: RegionWithLeader,
+    ) -> Result<RegionStore> {
+        let leader_id = region.leader.as_ref().map(|p| p.store_id);
+        // Pick a non-leader peer if available, otherwise fall back to leader.
+        let peer = region
+            .region
+            .peers
+            .iter()
+            .find(|p| Some(p.store_id) != leader_id)
+            .or(region.leader.as_ref());
+        let store_id = peer
+            .ok_or_else(|| crate::Error::LeaderNotFound {
+                region: region.ver_id(),
+            })?
+            .store_id;
         let store = self.region_cache.get_store_by_id(store_id).await?;
         let kv_client = self.kv_client(&store.address).await?;
         Ok(RegionStore::new(region, Arc::new(kv_client)))

@@ -728,7 +728,7 @@ impl<PdC: PdClient> Client<PdC> {
         };
         let request = new_raw_get_weak_request(key, self.cf.clone(), effective_min_index);
         let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
-            .retry_multi_region(self.backoff.clone())
+            .retry_multi_region_follower(self.backoff.clone())
             .merge(CollectSingle)
             .post_process_default()
             .plan();

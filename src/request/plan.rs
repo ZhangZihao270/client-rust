@@ -101,6 +101,10 @@ pub struct RetryableMultiRegion<P: Plan, PdC: PdClient> {
     /// If true, return Ok and preserve all regions' results, even if some of them are Err.
     /// Otherwise, return the first Err if there is any.
     pub preserve_region_results: bool,
+
+    /// When true, connect to a follower replica instead of the leader.
+    /// Used for weak reads that should land on the nearest replica.
+    pub use_follower: bool,
 }
 
 impl<P: Plan + Shardable, PdC: PdClient> RetryableMultiRegion<P, PdC>
@@ -115,6 +119,7 @@ where
         backoff: Backoff,
         permits: Arc<Semaphore>,
         preserve_region_results: bool,
+        use_follower: bool,
     ) -> Result<<Self as Plan>::Result> {
         let shards = current_plan.shards(&pd_client).collect::<Vec<_>>().await;
         debug!("single_plan_handler, shards: {}", shards.len());
@@ -129,6 +134,7 @@ where
                 backoff.clone(),
                 permits.clone(),
                 preserve_region_results,
+                use_follower,
             ));
             handles.push(handle);
         }
@@ -161,13 +167,17 @@ where
         mut backoff: Backoff,
         permits: Arc<Semaphore>,
         preserve_region_results: bool,
+        use_follower: bool,
     ) -> Result<<Self as Plan>::Result> {
         debug!("single_shard_handler");
         let region_ver_id = region.ver_id();
         let store_id = region.get_store_id().ok();
-        let region_store = match pd_client
-            .clone()
-            .map_region_to_store(region)
+        let store_future = if use_follower {
+            pd_client.clone().map_region_to_store_follower(region)
+        } else {
+            pd_client.clone().map_region_to_store(region)
+        };
+        let region_store = match store_future
             .await
             .and_then(|region_store| {
                 plan.apply_store(&region_store)?;
@@ -184,6 +194,7 @@ where
                     backoff,
                     permits,
                     preserve_region_results,
+                    use_follower,
                     err,
                 )
                 .await;
@@ -207,6 +218,7 @@ where
                     backoff,
                     permits,
                     preserve_region_results,
+                    use_follower,
                     e,
                 )
                 .await;
@@ -236,6 +248,7 @@ where
                         backoff,
                         permits,
                         preserve_region_results,
+                        use_follower,
                     )
                     .await
                 }
@@ -255,6 +268,7 @@ where
         mut backoff: Backoff,
         permits: Arc<Semaphore>,
         preserve_region_results: bool,
+        use_follower: bool,
         e: Error,
     ) -> Result<<Self as Plan>::Result> {
         debug!("handle_other_error: {:?}", e);
@@ -273,6 +287,7 @@ where
                     backoff,
                     permits,
                     preserve_region_results,
+                    use_follower,
                 )
                 .await
             }
@@ -387,6 +402,7 @@ impl<P: Plan, PdC: PdClient> Clone for RetryableMultiRegion<P, PdC> {
             pd_client: self.pd_client.clone(),
             backoff: self.backoff.clone(),
             preserve_region_results: self.preserve_region_results,
+            use_follower: self.use_follower,
         }
     }
 }
@@ -409,6 +425,7 @@ where
             self.backoff.clone(),
             concurrency_permits.clone(),
             self.preserve_region_results,
+            self.use_follower,
         )
         .await
     }
@@ -965,6 +982,7 @@ mod test {
             pd_client: Arc::new(MockPdClient::default()),
             backoff: Backoff::no_backoff(),
             preserve_region_results: false,
+            use_follower: false,
         };
         assert!(plan.execute().await.is_err())
     }

@@ -182,6 +182,24 @@ where
         backoff: Backoff,
         preserve_region_results: bool,
     ) -> PlanBuilder<PdC, RetryableMultiRegion<P, PdC>, Targetted> {
+        self.make_retry_multi_region_impl(backoff, preserve_region_results, false)
+    }
+
+    /// Like `retry_multi_region`, but routes to a follower replica instead of
+    /// the leader. Used for weak reads.
+    pub fn retry_multi_region_follower(
+        self,
+        backoff: Backoff,
+    ) -> PlanBuilder<PdC, RetryableMultiRegion<P, PdC>, Targetted> {
+        self.make_retry_multi_region_impl(backoff, false, true)
+    }
+
+    fn make_retry_multi_region_impl(
+        self,
+        backoff: Backoff,
+        preserve_region_results: bool,
+        use_follower: bool,
+    ) -> PlanBuilder<PdC, RetryableMultiRegion<P, PdC>, Targetted> {
         PlanBuilder {
             pd_client: self.pd_client.clone(),
             plan: RetryableMultiRegion {
@@ -189,6 +207,7 @@ where
                 pd_client: self.pd_client,
                 backoff,
                 preserve_region_results,
+                use_follower,
             },
             phantom: PhantomData,
         }
