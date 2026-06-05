@@ -55,6 +55,9 @@ service Tikv {
     // Compare if the value in database equals to `RawCASRequest.previous_value` before putting the new value. If not, this request will have no effect and the value in the database will be returned.
     rpc RawCompareAndSwap(kvrpcpb.RawCASRequest) returns (kvrpcpb.RawCASResponse) {}
     rpc RawChecksum(kvrpcpb.RawChecksumRequest) returns (kvrpcpb.RawChecksumResponse) {}
+    // Weak (early-ack) raw commands for causal consistency.
+    rpc RawPutWeak(kvrpcpb.RawPutWeakRequest) returns (kvrpcpb.RawPutWeakResponse) {}
+    rpc RawGetWeak(kvrpcpb.RawGetWeakRequest) returns (kvrpcpb.RawGetWeakResponse) {}
 
     // Store commands (sent to a each TiKV node in a cluster, rather than a certain region).
     rpc UnsafeDestroyRange(kvrpcpb.UnsafeDestroyRangeRequest) returns (kvrpcpb.UnsafeDestroyRangeResponse) {}

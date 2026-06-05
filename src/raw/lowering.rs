@@ -116,6 +116,22 @@ pub fn new_cas_request(
     requests::new_cas_request(key.into(), value, previous_value, cf)
 }
 
+pub fn new_raw_put_weak_request(
+    key: Key,
+    value: Value,
+    cf: Option<ColumnFamily>,
+) -> kvrpcpb::RawPutWeakRequest {
+    requests::new_raw_put_weak_request(key.into(), value, cf)
+}
+
+pub fn new_raw_get_weak_request(
+    key: Key,
+    cf: Option<ColumnFamily>,
+    min_index: u64,
+) -> kvrpcpb::RawGetWeakRequest {
+    requests::new_raw_get_weak_request(key.into(), cf, min_index)
+}
+
 pub fn new_raw_coprocessor_request(
     copr_name: String,
     copr_version_req: String,

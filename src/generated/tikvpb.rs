@@ -1042,6 +1042,51 @@ pub mod tikv_client {
             req.extensions_mut().insert(GrpcMethod::new("tikvpb.Tikv", "RawChecksum"));
             self.inner.unary(req, path, codec).await
         }
+        /// Weak (early-ack) raw commands for causal consistency.
+        pub async fn raw_put_weak(
+            &mut self,
+            request: impl tonic::IntoRequest<super::super::kvrpcpb::RawPutWeakRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::super::kvrpcpb::RawPutWeakResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/tikvpb.Tikv/RawPutWeak");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("tikvpb.Tikv", "RawPutWeak"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn raw_get_weak(
+            &mut self,
+            request: impl tonic::IntoRequest<super::super::kvrpcpb::RawGetWeakRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::super::kvrpcpb::RawGetWeakResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::new(
+                        tonic::Code::Unknown,
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic::codec::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/tikvpb.Tikv/RawGetWeak");
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new("tikvpb.Tikv", "RawGetWeak"));
+            self.inner.unary(req, path, codec).await
+        }
         /// Store commands (sent to a each TiKV node in a cluster, rather than a certain region).
         pub async fn unsafe_destroy_range(
             &mut self,

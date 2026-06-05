@@ -669,6 +669,44 @@ impl<PdC: PdClient> Client<PdC> {
             .collect())
     }
 
+    /// Weak-consistency put: returns as soon as the write is proposed to Raft
+    /// (before it is committed/applied). Returns the assigned raft log index
+    /// which can be passed as `min_index` to `get_weak` for causal ordering.
+    pub async fn put_weak(
+        &self,
+        key: impl Into<Key>,
+        value: impl Into<Value>,
+    ) -> Result<u64> {
+        debug!("invoking raw put_weak request");
+        let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
+        let request = new_raw_put_weak_request(key, value.into(), self.cf.clone());
+        let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
+            .retry_multi_region(self.backoff.clone())
+            .merge(CollectSingle)
+            .post_process_default()
+            .plan();
+        plan.execute().await
+    }
+
+    /// Weak-consistency get: reads from local RocksDB without a ReadIndex
+    /// round-trip. Pass `min_index` obtained from a prior `put_weak` to ensure
+    /// the read sees at least that write (causal ordering).
+    pub async fn get_weak(
+        &self,
+        key: impl Into<Key>,
+        min_index: u64,
+    ) -> Result<Option<Value>> {
+        debug!("invoking raw get_weak request");
+        let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
+        let request = new_raw_get_weak_request(key, self.cf.clone(), min_index);
+        let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
+            .retry_multi_region(self.backoff.clone())
+            .merge(CollectSingle)
+            .post_process_default()
+            .plan();
+        plan.execute().await
+    }
+
     /// Create a new *atomic* 'compare and set' request.
     ///
     /// Once resolved this request will result in an atomic `compare and set'

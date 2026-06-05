@@ -650,6 +650,86 @@ impl HasLocks for kvrpcpb::RawCasResponse {}
 
 impl HasLocks for kvrpcpb::RawCoprocessorResponse {}
 
+// --- Weak consistency requests ---
+
+pub fn new_raw_put_weak_request(
+    key: Vec<u8>,
+    value: Vec<u8>,
+    cf: Option<ColumnFamily>,
+) -> kvrpcpb::RawPutWeakRequest {
+    let mut req = kvrpcpb::RawPutWeakRequest::default();
+    req.key = key;
+    req.value = value;
+    req.maybe_set_cf(cf);
+    req
+}
+
+impl KvRequest for kvrpcpb::RawPutWeakRequest {
+    type Response = kvrpcpb::RawPutWeakResponse;
+}
+
+shardable_key!(kvrpcpb::RawPutWeakRequest);
+collect_single!(kvrpcpb::RawPutWeakResponse);
+
+impl SingleKey for kvrpcpb::RawPutWeakRequest {
+    fn key(&self) -> &Vec<u8> {
+        &self.key
+    }
+}
+
+impl Process<kvrpcpb::RawPutWeakResponse> for DefaultProcessor {
+    type Out = u64;
+
+    fn process(&self, input: Result<kvrpcpb::RawPutWeakResponse>) -> Result<Self::Out> {
+        let input = input?;
+        Ok(input.assigned_index)
+    }
+}
+
+pub fn new_raw_get_weak_request(
+    key: Vec<u8>,
+    cf: Option<ColumnFamily>,
+    min_index: u64,
+) -> kvrpcpb::RawGetWeakRequest {
+    let mut req = kvrpcpb::RawGetWeakRequest::default();
+    req.key = key;
+    req.min_index = min_index;
+    req.maybe_set_cf(cf);
+    req
+}
+
+impl KvRequest for kvrpcpb::RawGetWeakRequest {
+    type Response = kvrpcpb::RawGetWeakResponse;
+}
+
+shardable_key!(kvrpcpb::RawGetWeakRequest);
+collect_single!(kvrpcpb::RawGetWeakResponse);
+
+impl SingleKey for kvrpcpb::RawGetWeakRequest {
+    fn key(&self) -> &Vec<u8> {
+        &self.key
+    }
+}
+
+impl Process<kvrpcpb::RawGetWeakResponse> for DefaultProcessor {
+    type Out = Option<Value>;
+
+    fn process(&self, input: Result<kvrpcpb::RawGetWeakResponse>) -> Result<Self::Out> {
+        let input = input?;
+        Ok(if input.not_found {
+            None
+        } else {
+            Some(input.value)
+        })
+    }
+}
+
+impl_raw_rpc_request!(RawPutWeakRequest);
+impl_raw_rpc_request!(RawGetWeakRequest);
+
+impl HasLocks for kvrpcpb::RawPutWeakResponse {}
+impl HasLocks for kvrpcpb::RawGetWeakResponse {}
+
 #[cfg(test)]
 mod test {
     use std::any::Any;

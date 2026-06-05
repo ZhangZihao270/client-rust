@@ -2097,6 +2097,57 @@ pub struct TiFlashSystemTableResponse {
     #[prost(bytes = "vec", tag = "1")]
     pub data: ::prost::alloc::vec::Vec<u8>,
 }
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RawPutWeakRequest {
+    #[prost(message, optional, tag = "1")]
+    pub context: ::core::option::Option<Context>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "3")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "4")]
+    pub cf: ::prost::alloc::string::String,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RawPutWeakResponse {
+    #[prost(message, optional, tag = "1")]
+    pub region_error: ::core::option::Option<super::errorpb::Error>,
+    #[prost(string, tag = "2")]
+    pub error: ::prost::alloc::string::String,
+    /// The raft log index assigned to this write. Clients track this as
+    /// their causal dependency (min_index) for subsequent weak reads.
+    #[prost(uint64, tag = "3")]
+    pub assigned_index: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RawGetWeakRequest {
+    #[prost(message, optional, tag = "1")]
+    pub context: ::core::option::Option<Context>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "3")]
+    pub cf: ::prost::alloc::string::String,
+    /// Minimum applied raft index required before reading. The server
+    /// waits until applied_index >= min_index, then reads from local
+    /// RocksDB without a ReadIndex round-trip.
+    #[prost(uint64, tag = "4")]
+    pub min_index: u64,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RawGetWeakResponse {
+    #[prost(message, optional, tag = "1")]
+    pub region_error: ::core::option::Option<super::errorpb::Error>,
+    #[prost(string, tag = "2")]
+    pub error: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "3")]
+    pub value: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bool, tag = "4")]
+    pub not_found: bool,
+}
 /// Used to specify the behavior when a pessimistic lock request is woken up after waiting for another
 /// lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
