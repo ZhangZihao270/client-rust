@@ -2,6 +2,7 @@
 use core::ops::Range;
 
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use log::debug;
@@ -48,6 +49,8 @@ pub struct Client<PdC: PdClient = PdRpcClient> {
     /// Whether to use the [`atomic mode`](Client::with_atomic_for_cas).
     atomic: bool,
     keyspace: Keyspace,
+    /// Tracks the max assigned_index from weak puts for automatic causal ordering.
+    weak_min_index: Arc<AtomicU64>,
 }
 
 impl Clone for Client {
@@ -58,6 +61,7 @@ impl Clone for Client {
             backoff: self.backoff.clone(),
             atomic: self.atomic,
             keyspace: self.keyspace,
+            weak_min_index: self.weak_min_index.clone(),
         }
     }
 }
@@ -126,6 +130,7 @@ impl Client<PdRpcClient> {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace,
+            weak_min_index: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -161,6 +166,7 @@ impl Client<PdRpcClient> {
             backoff: self.backoff.clone(),
             atomic: self.atomic,
             keyspace: self.keyspace,
+            weak_min_index: self.weak_min_index.clone(),
         }
     }
 
@@ -190,6 +196,7 @@ impl Client<PdRpcClient> {
             backoff,
             atomic: self.atomic,
             keyspace: self.keyspace,
+            weak_min_index: self.weak_min_index.clone(),
         }
     }
 
@@ -208,6 +215,7 @@ impl Client<PdRpcClient> {
             backoff: self.backoff.clone(),
             atomic: true,
             keyspace: self.keyspace,
+            weak_min_index: self.weak_min_index.clone(),
         }
     }
 }
@@ -670,8 +678,8 @@ impl<PdC: PdClient> Client<PdC> {
     }
 
     /// Weak-consistency put: returns as soon as the write is proposed to Raft
-    /// (before it is committed/applied). Returns the assigned raft log index
-    /// which can be passed as `min_index` to `get_weak` for causal ordering.
+    /// (before it is committed/applied). Returns the assigned raft log index.
+    /// The client automatically tracks the max assigned_index for causal reads.
     pub async fn put_weak(
         &self,
         key: impl Into<Key>,
@@ -685,12 +693,17 @@ impl<PdC: PdClient> Client<PdC> {
             .merge(CollectSingle)
             .post_process_default()
             .plan();
-        plan.execute().await
+        let assigned_index = plan.execute().await?;
+        // Track the max assigned_index for automatic causal ordering in get_weak.
+        self.weak_min_index
+            .fetch_max(assigned_index, Ordering::Relaxed);
+        Ok(assigned_index)
     }
 
     /// Weak-consistency get: reads from local RocksDB without a ReadIndex
-    /// round-trip. Pass `min_index` obtained from a prior `put_weak` to ensure
-    /// the read sees at least that write (causal ordering).
+    /// round-trip. Pass `min_index` from a prior `put_weak` to ensure causal
+    /// consistency (server waits until applied_index >= min_index). Use 0 for
+    /// no gating (plain stale read).
     pub async fn get_weak(
         &self,
         key: impl Into<Key>,
@@ -705,6 +718,11 @@ impl<PdC: PdClient> Client<PdC> {
             .post_process_default()
             .plan();
         plan.execute().await
+    }
+
+    /// Returns the current tracked min_index for weak reads.
+    pub fn weak_min_index(&self) -> u64 {
+        self.weak_min_index.load(Ordering::Relaxed)
     }
 
     /// Create a new *atomic* 'compare and set' request.
@@ -978,6 +996,7 @@ mod tests {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace: Keyspace::Enable { keyspace_id: 0 },
+            weak_min_index: Arc::new(AtomicU64::new(0)),
         };
         let pairs = vec![
             KvPair(vec![11].into(), vec![12]),
@@ -1011,6 +1030,7 @@ mod tests {
             backoff: DEFAULT_REGION_BACKOFF,
             atomic: false,
             keyspace: Keyspace::Enable { keyspace_id: 0 },
+            weak_min_index: Arc::new(AtomicU64::new(0)),
         };
         let resps = client
             .coprocessor(
