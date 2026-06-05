@@ -77,4 +77,35 @@ impl RegionWithLeader {
             })
             .map(|s| s.store_id)
     }
+
+    /// Pick the peer a weak read should be served from, preferring the replica
+    /// closest to this client.
+    ///
+    /// Selection order:
+    /// 1. The peer on the client's preferred (local) store, if that store hosts
+    ///    a replica of this region. The preferred store is read from the
+    ///    `WEAK_READ_PREFERRED_STORE` env var (a store id). This is a PoC stand-in
+    ///    for proper locality — production would match PD store labels (zone/az).
+    /// 2. Otherwise any non-leader peer (a follower, so the read stays local to
+    ///    it and avoids the remote-leader RTT).
+    /// 3. Otherwise the leader (single-replica / no-follower fallback).
+    pub fn weak_read_peer(&self) -> Option<metapb::Peer> {
+        let leader_store = self.leader.as_ref().map(|p| p.store_id);
+
+        if let Some(preferred) = std::env::var("WEAK_READ_PREFERRED_STORE")
+            .ok()
+            .and_then(|s| s.parse::<StoreId>().ok())
+        {
+            if let Some(p) = self.region.peers.iter().find(|p| p.store_id == preferred) {
+                return Some(p.clone());
+            }
+        }
+
+        self.region
+            .peers
+            .iter()
+            .find(|p| Some(p.store_id) != leader_store)
+            .cloned()
+            .or_else(|| self.leader.clone())
+    }
 }

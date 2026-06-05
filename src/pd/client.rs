@@ -244,15 +244,12 @@ impl<KvC: KvConnect + Send + Sync + 'static> PdClient for PdRpcClient<KvC> {
         self: Arc<Self>,
         region: RegionWithLeader,
     ) -> Result<RegionStore> {
-        let leader_id = region.leader.as_ref().map(|p| p.store_id);
-        // Pick a non-leader peer if available, otherwise fall back to leader.
-        let peer = region
-            .region
-            .peers
-            .iter()
-            .find(|p| Some(p.store_id) != leader_id)
-            .or(region.leader.as_ref());
-        let store_id = peer
+        // Pick the nearest replica (preferred local store, else any follower,
+        // else leader) and connect to its store, so the weak read's gRPC lands
+        // on that replica. Must match the peer chosen in RawGetWeakRequest's
+        // apply_store (both use RegionWithLeader::weak_read_peer).
+        let store_id = region
+            .weak_read_peer()
             .ok_or_else(|| crate::Error::LeaderNotFound {
                 region: region.ver_id(),
             })?

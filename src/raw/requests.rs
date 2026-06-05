@@ -724,16 +724,11 @@ impl Shardable for kvrpcpb::RawGetWeakRequest {
 
     fn apply_store(&mut self, store: &RegionStore) -> Result<()> {
         let region = &store.region_with_leader;
-        let leader_id = region.leader.as_ref().map(|p| p.id);
-        // Pick a non-leader peer for the request context so TiKV serves
-        // it locally on a follower. Fall back to leader if no followers.
+        // Pick the nearest replica (preferred local store, else any follower,
+        // else leader) so TiKV serves the weak read locally and we avoid the
+        // remote-leader RTT.
         let peer = region
-            .region
-            .peers
-            .iter()
-            .find(|p| Some(p.id) != leader_id)
-            .cloned()
-            .or_else(|| region.leader.clone())
+            .weak_read_peer()
             .ok_or_else(|| crate::Error::LeaderNotFound {
                 region: region.ver_id(),
             })?;
