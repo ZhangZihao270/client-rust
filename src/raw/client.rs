@@ -53,6 +53,10 @@ pub struct Client<PdC: PdClient = PdRpcClient> {
     /// Per-region max assigned_index from weak puts for automatic causal ordering.
     /// Maps region_id → max(assigned_index) seen from put_weak to that region.
     weak_min_index: Arc<Mutex<HashMap<u64, u64>>>,
+    /// Client-side read-your-writes cache (option A): key → value the client
+    /// last wrote via put_weak. get_weak returns the cached value instead of
+    /// waiting for a lagging local replica to apply the write. Encoded key bytes.
+    weak_cache: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
 }
 
 impl Clone for Client {
@@ -64,6 +68,7 @@ impl Clone for Client {
             atomic: self.atomic,
             keyspace: self.keyspace,
             weak_min_index: self.weak_min_index.clone(),
+            weak_cache: self.weak_cache.clone(),
         }
     }
 }
@@ -133,6 +138,7 @@ impl Client<PdRpcClient> {
             atomic: false,
             keyspace,
             weak_min_index: Arc::new(Mutex::new(HashMap::new())),
+            weak_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -169,6 +175,7 @@ impl Client<PdRpcClient> {
             atomic: self.atomic,
             keyspace: self.keyspace,
             weak_min_index: self.weak_min_index.clone(),
+            weak_cache: self.weak_cache.clone(),
         }
     }
 
@@ -199,6 +206,7 @@ impl Client<PdRpcClient> {
             atomic: self.atomic,
             keyspace: self.keyspace,
             weak_min_index: self.weak_min_index.clone(),
+            weak_cache: self.weak_cache.clone(),
         }
     }
 
@@ -218,6 +226,7 @@ impl Client<PdRpcClient> {
             atomic: true,
             keyspace: self.keyspace,
             weak_min_index: self.weak_min_index.clone(),
+            weak_cache: self.weak_cache.clone(),
         }
     }
 }
@@ -689,14 +698,20 @@ impl<PdC: PdClient> Client<PdC> {
     ) -> Result<u64> {
         debug!("invoking raw put_weak request");
         let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
-        let request = new_raw_put_weak_request(key, value.into(), self.cf.clone());
+        let value: Value = value.into();
+        let kbytes: Vec<u8> = key.clone().into();
+        let request = new_raw_put_weak_request(key, value.clone(), self.cf.clone());
         let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
             .retry_multi_region(self.backoff.clone())
             .merge(CollectSingle)
             .post_process_default()
             .plan();
         let (assigned_index, region_id) = plan.execute().await?;
-        // Track per-region max assigned_index for automatic causal ordering in get_weak.
+        // Option A (client cache merge): remember our own write so a later
+        // get_weak returns it directly — read-your-writes without waiting for a
+        // lagging local replica to apply it.
+        self.weak_cache.lock().unwrap().insert(kbytes, value);
+        // Track per-region max assigned_index too (kept for the option-B path).
         if region_id != 0 {
             let mut map = self.weak_min_index.lock().unwrap();
             let entry = map.entry(region_id).or_insert(0);
@@ -718,15 +733,18 @@ impl<PdC: PdClient> Client<PdC> {
     ) -> Result<Option<Value>> {
         debug!("invoking raw get_weak request");
         let key = key.into().encode_keyspace(self.keyspace, KeyMode::Raw);
-        let effective_min_index = if min_index == 0 {
-            // Auto-resolve: look up the key's region and use tracked min_index.
-            let region = self.rpc.region_for_key(&key.clone().into()).await?;
-            let map = self.weak_min_index.lock().unwrap();
-            *map.get(&region.id()).unwrap_or(&0)
-        } else {
-            min_index
-        };
-        let request = new_raw_get_weak_request(key, self.cf.clone(), effective_min_index);
+        let kbytes: Vec<u8> = key.clone().into();
+        // Option A (client cache merge): if we wrote this key, return our cached
+        // value — instant read-your-writes, no RPC, no waiting for the local
+        // replica to catch up. (`min_index` arg kept for API compat / the
+        // option-B server-gating path; ignored here.)
+        let _ = min_index;
+        if let Some(v) = self.weak_cache.lock().unwrap().get(&kbytes) {
+            return Ok(Some(v.clone()));
+        }
+        // Cache miss: read from the nearest replica WITHOUT server-side gating
+        // (min_index = 0), so it never blocks on a lagging follower.
+        let request = new_raw_get_weak_request(key, self.cf.clone(), 0);
         let plan = crate::request::PlanBuilder::new(self.rpc.clone(), self.keyspace, request)
             .retry_multi_region_follower(self.backoff.clone())
             .merge(CollectSingle)
@@ -1012,6 +1030,7 @@ mod tests {
             atomic: false,
             keyspace: Keyspace::Enable { keyspace_id: 0 },
             weak_min_index: Arc::new(Mutex::new(HashMap::new())),
+            weak_cache: Arc::new(Mutex::new(HashMap::new())),
         };
         let pairs = vec![
             KvPair(vec![11].into(), vec![12]),
@@ -1046,6 +1065,7 @@ mod tests {
             atomic: false,
             keyspace: Keyspace::Enable { keyspace_id: 0 },
             weak_min_index: Arc::new(Mutex::new(HashMap::new())),
+            weak_cache: Arc::new(Mutex::new(HashMap::new())),
         };
         let resps = client
             .coprocessor(
